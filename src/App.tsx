@@ -12,37 +12,44 @@ import {
   Clock,
   User,
   Filter,
-  ChevronRight
+  ChevronRight,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Key, Movement, Stats } from './types';
+import { Key, Movement, Stats, CRQ } from './types';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'keys' | 'history'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'keys' | 'history' | 'crqs'>('dashboard');
   const [keys, setKeys] = useState<Key[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
-  const [stats, setStats] = useState<Stats>({ total: 0, inField: 0, available: 0, overdue: 0 });
+  const [crqs, setCrqs] = useState<CRQ[]>([]);
+  const [stats, setStats] = useState<Stats>({ total: 0, inField: 0, available: 0, totalCrqs: 0, overdue: 0 });
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<Key | null>(null);
   const [showCheckoutModal, setShowCheckoutModal] = useState<Key | null>(null);
+  const [showAddCrqModal, setShowAddCrqModal] = useState(false);
+  const [keySearchQuery, setKeySearchQuery] = useState('');
   
   // Form states
-  const [newKey, setNewKey] = useState({ id: '', name: '', crq: '' });
-  const [editKeyForm, setEditKeyForm] = useState({ id: '', name: '', crq: '' });
+  const [newKey, setNewKey] = useState({ id: '', name: '' });
+  const [editKeyForm, setEditKeyForm] = useState({ id: '', name: '' });
   const [checkoutForm, setCheckoutForm] = useState({ technician_name: '', company: '', crq: '', return_date: '' });
+  const [newCrq, setNewCrq] = useState({ id: '', technician: '', technician_phone: '', company: '', selectedKeys: [] as string[] });
 
   const fetchData = async () => {
     try {
-      const [keysRes, movementsRes, statsRes] = await Promise.all([
+      const [keysRes, movementsRes, statsRes, crqsRes] = await Promise.all([
         fetch('/api/keys'),
         fetch('/api/movements'),
-        fetch('/api/stats')
+        fetch('/api/stats'),
+        fetch('/api/crqs')
       ]);
       
       if (keysRes.ok) setKeys(await keysRes.json());
       if (movementsRes.ok) setMovements(await movementsRes.json());
       if (statsRes.ok) setStats(await statsRes.json());
+      if (crqsRes.ok) setCrqs(await crqsRes.json());
     } catch (error) {
       console.error('Error fetching data:', error);
     }
@@ -54,6 +61,13 @@ export default function App() {
 
   const handleAddKey = async (e: FormEvent) => {
     e.preventDefault();
+    
+    // Check for duplicate ID
+    if (keys.some(k => k.id.toLowerCase() === newKey.id.toLowerCase())) {
+      alert(`Erro: Já existe uma chave cadastrada com o ID "${newKey.id}".`);
+      return;
+    }
+
     const res = await fetch('/api/keys', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -61,10 +75,10 @@ export default function App() {
     });
     if (res.ok) {
       setShowAddModal(false);
-      setNewKey({ id: '', name: '', crq: '' });
+      setNewKey({ id: '', name: '' });
       fetchData();
     } else {
-      alert('Erro ao cadastrar chave. ID já existe?');
+      alert('Erro ao cadastrar chave.');
     }
   };
 
@@ -82,6 +96,62 @@ export default function App() {
       fetchData();
     } else {
       alert('Erro ao atualizar chave.');
+    }
+  };
+
+  const handleAddCrq = async (e: FormEvent) => {
+    e.preventDefault();
+    
+    // Check for duplicate CRQ ID
+    if (crqs.some(c => c.id.toLowerCase() === newCrq.id.toLowerCase())) {
+      alert(`Erro: Já existe uma CRQ/OS cadastrada com o ID "${newCrq.id}".`);
+      return;
+    }
+
+    if (newCrq.selectedKeys.length === 0) {
+      alert('Selecione pelo menos uma chave.');
+      return;
+    }
+
+    if (!confirm(`Deseja confirmar a criação da CRQ/OS ${newCrq.id} com ${newCrq.selectedKeys.length} chaves?`)) {
+      return;
+    }
+
+    const res = await fetch('/api/crqs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: newCrq.id,
+        technician: newCrq.technician,
+        technician_phone: newCrq.technician_phone,
+        company: newCrq.company,
+        keyIds: newCrq.selectedKeys
+      })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setShowAddCrqModal(false);
+      setNewCrq({ id: '', technician: '', technician_phone: '', company: '', selectedKeys: [] as string[] });
+      setKeySearchQuery('');
+      fetchData();
+    } else {
+      alert(`Erro ao criar CRQ: ${data.error || 'Erro desconhecido'}`);
+    }
+  };
+
+  const handleCloseCrq = async (crqId: string) => {
+    if (!confirm(`Deseja dar baixa (encerrar) a CRQ/OS ${crqId}? Todas as chaves vinculadas ficarão disponíveis.`)) {
+      return;
+    }
+
+    const res = await fetch(`/api/crqs/${crqId}/close`, {
+      method: 'POST'
+    });
+    const data = await res.json();
+    if (res.ok) {
+      fetchData();
+    } else {
+      alert(`Erro ao encerrar CRQ: ${data.error || 'Erro desconhecido'}`);
     }
   };
 
@@ -114,18 +184,6 @@ export default function App() {
       body: JSON.stringify({ key_id: keyId })
     });
     if (res.ok) fetchData();
-  };
-
-  const handleResetDatabase = async () => {
-    if (!confirm('Tem certeza que deseja limpar TODO o banco de dados? Esta ação não pode ser desfeita.')) return;
-    
-    const res = await fetch('/api/reset', { method: 'POST' });
-    if (res.ok) {
-      alert('Banco de dados limpo com sucesso!');
-      fetchData();
-    } else {
-      alert('Erro ao limpar banco de dados.');
-    }
   };
 
   const filteredKeys = keys.filter(k => 
@@ -174,6 +232,13 @@ export default function App() {
             <History size={20} />
             <span className="font-medium">Histórico</span>
           </button>
+          <button 
+            onClick={() => setActiveTab('crqs')}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${activeTab === 'crqs' ? 'bg-zinc-900 text-white shadow-lg shadow-zinc-200' : 'text-zinc-500 hover:bg-zinc-100'}`}
+          >
+            <FileText size={20} />
+            <span className="font-medium">CRQs / OS</span>
+          </button>
         </nav>
 
         <div className="p-6 border-t border-zinc-100">
@@ -195,6 +260,7 @@ export default function App() {
               {activeTab === 'dashboard' && 'Visão Geral'}
               {activeTab === 'keys' && 'Gerenciamento de Chaves'}
               {activeTab === 'history' && 'Histórico de Cautelas'}
+              {activeTab === 'crqs' && 'Gerenciamento de CRQs / OS'}
             </h2>
             <p className="text-zinc-500">Bem-vindo ao painel de controle de chaves.</p>
           </div>
@@ -204,7 +270,7 @@ export default function App() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
               <input 
                 type="text" 
-                placeholder="Buscar chaves..." 
+                placeholder="Buscar..." 
                 className="pl-10 pr-4 py-2 bg-white border border-zinc-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-900/10 w-64"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -217,6 +283,15 @@ export default function App() {
               >
                 <Plus size={18} />
                 Cadastrar Chave
+              </button>
+            )}
+            {activeTab === 'crqs' && (
+              <button 
+                onClick={() => setShowAddCrqModal(true)}
+                className="bg-zinc-900 text-white px-4 py-2 rounded-xl flex items-center gap-2 hover:bg-zinc-800 transition-colors shadow-sm"
+              >
+                <Plus size={18} />
+                Criar CRQ / OS
               </button>
             )}
           </div>
@@ -232,11 +307,12 @@ export default function App() {
               className="space-y-8"
             >
               {/* Stats Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
                 {[
                   { label: 'Total de Chaves', value: stats.total, icon: KeyIcon, color: 'zinc' },
                   { label: 'Em Campo', value: stats.inField, icon: ArrowUpRight, color: 'amber' },
                   { label: 'Disponíveis', value: stats.available, icon: CheckCircle2, color: 'emerald' },
+                  { label: 'Total de CRQs', value: stats.totalCrqs, icon: FileText, color: 'indigo' },
                   { label: 'Atrasadas', value: stats.overdue, icon: AlertCircle, color: 'rose' },
                 ].map((stat, i) => (
                   <div key={i} className="glass-card p-6">
@@ -318,22 +394,6 @@ export default function App() {
                   </div>
                 </div>
               </div>
-
-              {/* Danger Zone */}
-              <div className="mt-12 pt-8 border-t border-zinc-200">
-                <div className="flex items-center justify-between p-6 bg-rose-50 rounded-2xl border border-rose-100">
-                  <div>
-                    <h4 className="text-rose-900 font-bold">Zona de Perigo</h4>
-                    <p className="text-rose-700 text-sm">Apague todos os registros de chaves e movimentações para reiniciar o sistema.</p>
-                  </div>
-                  <button 
-                    onClick={handleResetDatabase}
-                    className="px-6 py-2 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-colors shadow-sm"
-                  >
-                    Limpar Banco de Dados
-                  </button>
-                </div>
-              </div>
             </motion.div>
           )}
 
@@ -344,19 +404,17 @@ export default function App() {
               animate={{ opacity: 1 }}
               className="glass-card overflow-hidden"
             >
-              <div className="grid grid-cols-5 bg-zinc-50 py-4 px-6 border-b border-zinc-200 text-xs font-bold text-zinc-500 uppercase tracking-wider">
+              <div className="grid grid-cols-4 bg-zinc-50 py-4 px-6 border-b border-zinc-200 text-xs font-bold text-zinc-500 uppercase tracking-wider">
                 <div>ID Chave</div>
                 <div>Nome</div>
-                <div>CRQ / OS</div>
                 <div>Status</div>
                 <div className="text-right">Ações</div>
               </div>
               <div className="divide-y divide-zinc-100">
                 {filteredKeys.map((key) => (
-                  <div key={key.id} className="data-grid">
+                  <div key={key.id} className="grid grid-cols-4 border-b border-zinc-100 py-4 px-6 items-center hover:bg-zinc-50 transition-colors">
                     <div className="font-mono text-sm text-zinc-600">{key.id}</div>
                     <div className="font-semibold">{key.name}</div>
-                    <div className="text-zinc-500 text-sm">{key.crq || '-'}</div>
                     <div>
                       <span className={`status-pill ${key.status === 'available' ? 'status-available' : 'status-in-field'}`}>
                         {key.status === 'available' ? 'Disponível' : 'Em Campo'}
@@ -366,7 +424,7 @@ export default function App() {
                       <button 
                         onClick={() => {
                           setShowEditModal(key);
-                          setEditKeyForm({ id: key.id, name: key.name, crq: key.crq || '' });
+                          setEditKeyForm({ id: key.id, name: key.name });
                         }}
                         className="text-sm font-bold text-zinc-500 hover:text-zinc-900 underline underline-offset-4"
                       >
@@ -390,6 +448,56 @@ export default function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'crqs' && (
+            <motion.div 
+              key="crqs"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="glass-card overflow-hidden"
+            >
+              <div className="grid grid-cols-7 bg-zinc-50 py-4 px-6 border-b border-zinc-200 text-xs font-bold text-zinc-500 uppercase tracking-wider">
+                <div>ID CRQ / OS</div>
+                <div>Técnico</div>
+                <div>Telefone</div>
+                <div>Empresa</div>
+                <div>Data Criação</div>
+                <div>Status</div>
+                <div className="text-right">Ações</div>
+              </div>
+              <div className="divide-y divide-zinc-100">
+                {crqs.map((crq) => (
+                  <div key={crq.id} className="grid grid-cols-7 border-b border-zinc-100 py-4 px-6 items-center hover:bg-zinc-50 transition-colors">
+                    <div className="font-mono text-sm font-bold">{crq.id}</div>
+                    <div className="text-sm">{crq.technician}</div>
+                    <div className="text-sm text-zinc-500">{crq.technician_phone || '-'}</div>
+                    <div className="text-sm">{crq.company}</div>
+                    <div className="text-sm text-zinc-500">{new Date(crq.created_at).toLocaleString()}</div>
+                    <div>
+                      <span className={`status-pill ${crq.status === 'open' ? 'status-in-field' : 'status-available'}`}>
+                        {crq.status === 'open' ? 'Aberta' : 'Fechada'}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      {crq.status === 'open' && (
+                        <button 
+                          onClick={() => handleCloseCrq(crq.id)}
+                          className="text-sm font-bold text-rose-600 hover:text-rose-700 underline underline-offset-4"
+                        >
+                          Dar Baixa
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {crqs.length === 0 && (
+                  <div className="p-12 text-center text-zinc-400">
+                    Nenhuma CRQ / OS registrada.
+                  </div>
+                )}
               </div>
             </motion.div>
           )}
@@ -476,15 +584,6 @@ export default function App() {
                   onChange={e => setNewKey({...newKey, name: e.target.value})}
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">CRQ / Ordem de Serviço</label>
-                <input 
-                  type="text" 
-                  className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
-                  value={newKey.crq}
-                  onChange={e => setNewKey({...newKey, crq: e.target.value})}
-                />
-              </div>
               <div className="flex gap-3 mt-8">
                 <button 
                   type="button"
@@ -534,15 +633,6 @@ export default function App() {
                   onChange={e => setEditKeyForm({...editKeyForm, name: e.target.value})}
                 />
               </div>
-              <div>
-                <label className="block text-sm font-medium text-zinc-700 mb-1">CRQ / Ordem de Serviço</label>
-                <input 
-                  type="text" 
-                  className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
-                  value={editKeyForm.crq}
-                  onChange={e => setEditKeyForm({...editKeyForm, crq: e.target.value})}
-                />
-              </div>
               <div className="flex gap-3 mt-8">
                 <button 
                   type="button"
@@ -556,6 +646,133 @@ export default function App() {
                   className="flex-1 px-4 py-2 bg-zinc-900 text-white rounded-xl hover:bg-zinc-800 transition-colors"
                 >
                   Salvar Alterações
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+
+      {showAddCrqModal && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white rounded-2xl p-8 w-full max-w-lg shadow-2xl"
+          >
+            <h3 className="text-xl font-bold mb-6">Criar Nova CRQ / OS</h3>
+            <form onSubmit={handleAddCrq} className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">ID CRQ / OS</label>
+                  <input 
+                    required
+                    type="text" 
+                    placeholder="ex: CRQ12345"
+                    className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
+                    value={newCrq.id}
+                    onChange={e => setNewCrq({...newCrq, id: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">Empresa</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
+                    value={newCrq.company}
+                    onChange={e => setNewCrq({...newCrq, company: e.target.value})}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">Técnico Responsável</label>
+                  <input 
+                    required
+                    type="text" 
+                    className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
+                    value={newCrq.technician}
+                    onChange={e => setNewCrq({...newCrq, technician: e.target.value})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-zinc-700 mb-1">Telefone do Técnico</label>
+                  <input 
+                    type="tel" 
+                    placeholder="(00) 00000-0000"
+                    className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
+                    value={newCrq.technician_phone}
+                    onChange={e => setNewCrq({...newCrq, technician_phone: e.target.value})}
+                  />
+                </div>
+              </div>
+              
+              <div>
+                <div className="flex justify-between items-end mb-2">
+                  <label className="block text-sm font-medium text-zinc-700">Selecionar Chaves (Múltiplas)</label>
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 text-zinc-400" size={14} />
+                    <input 
+                      type="text" 
+                      placeholder="Filtrar chaves..." 
+                      className="pl-8 pr-3 py-1 text-xs border border-zinc-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-zinc-900/20"
+                      value={keySearchQuery}
+                      onChange={(e) => setKeySearchQuery(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="max-h-48 overflow-y-auto border border-zinc-200 rounded-xl divide-y divide-zinc-100">
+                  {keys
+                    .filter(key => 
+                      (key.name.toLowerCase().includes(keySearchQuery.toLowerCase()) || 
+                       key.id.toLowerCase().includes(keySearchQuery.toLowerCase()))
+                    )
+                    .map(key => (
+                    <label key={key.id} className={`flex items-center gap-3 p-3 hover:bg-zinc-50 cursor-pointer transition-colors ${key.status !== 'available' && !newCrq.selectedKeys.includes(key.id) ? 'opacity-50' : ''}`}>
+                      <input 
+                        type="checkbox"
+                        disabled={key.status !== 'available' && !newCrq.selectedKeys.includes(key.id)}
+                        className="w-4 h-4 rounded text-zinc-900 focus:ring-zinc-900 disabled:opacity-50"
+                        checked={newCrq.selectedKeys.includes(key.id)}
+                        onChange={(e) => {
+                          const selected = e.target.checked 
+                            ? [...newCrq.selectedKeys, key.id]
+                            : newCrq.selectedKeys.filter(id => id !== key.id);
+                          setNewCrq({...newCrq, selectedKeys: selected});
+                        }}
+                      />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium">{key.name}</p>
+                        <p className="text-xs text-zinc-400 font-mono">{key.id}</p>
+                      </div>
+                      <span className={`status-pill ${key.status === 'available' ? 'status-available' : 'status-in-field'}`}>
+                        {key.status === 'available' ? 'Disp.' : 'Em Campo'}
+                      </span>
+                    </label>
+                  ))}
+                  {keys.filter(key => 
+                    (key.name.toLowerCase().includes(keySearchQuery.toLowerCase()) || 
+                     key.id.toLowerCase().includes(keySearchQuery.toLowerCase()))
+                  ).length === 0 && (
+                    <div className="p-4 text-center text-xs text-zinc-400">Nenhuma chave encontrada.</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-8">
+                <button 
+                  type="button"
+                  onClick={() => setShowAddCrqModal(false)}
+                  className="flex-1 px-4 py-2 border border-zinc-200 rounded-xl hover:bg-zinc-50 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit"
+                  className="flex-1 px-4 py-2 bg-zinc-900 text-white rounded-xl hover:bg-zinc-800 transition-colors"
+                >
+                  Criar CRQ / OS
                 </button>
               </div>
             </form>

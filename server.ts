@@ -15,9 +15,25 @@ try {
     CREATE TABLE IF NOT EXISTS keys (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      crq TEXT,
       status TEXT DEFAULT 'available',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS crqs (
+      id TEXT PRIMARY KEY,
+      technician TEXT NOT NULL,
+      technician_phone TEXT,
+      company TEXT NOT NULL,
+      status TEXT DEFAULT 'open',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS crq_keys (
+      crq_id TEXT NOT NULL,
+      key_id TEXT NOT NULL,
+      PRIMARY KEY (crq_id, key_id),
+      FOREIGN KEY (crq_id) REFERENCES crqs(id),
+      FOREIGN KEY (key_id) REFERENCES keys(id)
     );
 
     CREATE TABLE IF NOT EXISTS movements (
@@ -38,21 +54,37 @@ try {
 
 // Migration: Handle schema changes for existing databases
 try {
-  const columns = db.prepare("PRAGMA table_info(movements)").all() as any[];
-  const columnNames = columns.map(c => c.name);
+  // Movements table migrations
+  const movementColumns = db.prepare("PRAGMA table_info(movements)").all() as any[];
+  const movementColumnNames = movementColumns.map(c => c.name);
   
-  if (columnNames.length > 0) {
-    if (columnNames.includes('user_name') && !columnNames.includes('technician_name')) {
+  if (movementColumnNames.length > 0) {
+    if (movementColumnNames.includes('user_name') && !movementColumnNames.includes('technician_name')) {
       db.exec("ALTER TABLE movements RENAME COLUMN user_name TO technician_name");
       console.log("Migrated user_name to technician_name");
     }
-    if (!columnNames.includes('company')) {
+    if (!movementColumnNames.includes('company')) {
       db.exec("ALTER TABLE movements ADD COLUMN company TEXT DEFAULT ''");
       console.log("Added company column to movements");
     }
-    if (!columnNames.includes('crq')) {
+    if (!movementColumnNames.includes('crq')) {
       db.exec("ALTER TABLE movements ADD COLUMN crq TEXT DEFAULT ''");
       console.log("Added crq column to movements");
+    }
+  }
+
+  // CRQ table migrations
+  const crqColumns = db.prepare("PRAGMA table_info(crqs)").all() as any[];
+  const crqColumnNames = crqColumns.map(c => c.name);
+  
+  if (crqColumnNames.length > 0) {
+    if (!crqColumnNames.includes('technician_phone')) {
+      db.exec("ALTER TABLE crqs ADD COLUMN technician_phone TEXT");
+      console.log("Added technician_phone column to crqs");
+    }
+    if (!crqColumnNames.includes('status')) {
+      db.exec("ALTER TABLE crqs ADD COLUMN status TEXT DEFAULT 'open'");
+      console.log("Added status column to crqs");
     }
   }
 } catch (err) {
@@ -76,41 +108,103 @@ async function startServer() {
 
   // Add new key
   app.post("/api/keys", (req, res) => {
-    const { id, name, crq } = req.body;
+    const { id, name } = req.body;
     try {
-      db.prepare("INSERT INTO keys (id, name, crq) VALUES (?, ?, ?)").run(id, name, crq);
+      db.prepare("INSERT INTO keys (id, name) VALUES (?, ?)").run(id, name);
       res.status(201).json({ success: true });
     } catch (err) {
-      res.status(400).json({ error: "Key ID already exists" });
+      console.error("Add key error:", err);
+      res.status(400).json({ error: "Key ID already exists or invalid data" });
     }
   });
 
   // Update existing key
   app.put("/api/keys/:id", (req, res) => {
     const { id: oldId } = req.params;
-    const { id: newId, name, crq } = req.body;
+    const { id: newId, name } = req.body;
     
     try {
       const transaction = db.transaction(() => {
-        // If ID is changing, check if new ID already exists
         if (newId !== oldId) {
           const existing = db.prepare("SELECT id FROM keys WHERE id = ?").get(newId);
           if (existing) {
             throw new Error("New ID already exists");
           }
-          
-          // Update movements first to maintain integrity if FK constraints are strict (though SQLite defaults are loose unless enabled)
           db.prepare("UPDATE movements SET key_id = ? WHERE key_id = ?").run(newId, oldId);
+          db.prepare("UPDATE crq_keys SET key_id = ? WHERE key_id = ?").run(newId, oldId);
         }
-        
-        db.prepare("UPDATE keys SET id = ?, name = ?, crq = ? WHERE id = ?").run(newId, name, crq, oldId);
+        db.prepare("UPDATE keys SET id = ?, name = ? WHERE id = ?").run(newId, name, oldId);
       });
-      
       transaction();
       res.json({ success: true });
     } catch (err: any) {
       console.error("Update error:", err);
       res.status(400).json({ error: err.message || "Failed to update key" });
+    }
+  });
+
+  // CRQ Endpoints
+  app.get("/api/crqs", (req, res) => {
+    const crqs = db.prepare("SELECT * FROM crqs ORDER BY created_at DESC").all();
+    res.json(crqs);
+  });
+
+  app.post("/api/crqs", (req, res) => {
+    const { id, technician, technician_phone, company, keyIds } = req.body;
+    try {
+      const transaction = db.transaction(() => {
+        db.prepare("INSERT INTO crqs (id, technician, technician_phone, company) VALUES (?, ?, ?, ?)").run(id, technician, technician_phone, company);
+        const insertKey = db.prepare("INSERT INTO crq_keys (crq_id, key_id) VALUES (?, ?)");
+        const updateKeyStatus = db.prepare("UPDATE keys SET status = 'in_field' WHERE id = ?");
+        for (const keyId of keyIds) {
+          insertKey.run(id, keyId);
+          updateKeyStatus.run(keyId);
+        }
+      });
+      transaction();
+      res.status(201).json({ success: true });
+    } catch (err: any) {
+      console.error("Create CRQ error:", err);
+      res.status(400).json({ error: err.message || "Failed to create CRQ" });
+    }
+  });
+
+  app.get("/api/crqs/:id", (req, res) => {
+    const { id } = req.params;
+    const crq = db.prepare("SELECT * FROM crqs WHERE id = ?").get(id);
+    if (!crq) return res.status(404).json({ error: "CRQ not found" });
+    
+    const keys = db.prepare(`
+      SELECT k.* 
+      FROM keys k 
+      JOIN crq_keys ck ON k.id = ck.key_id 
+      WHERE ck.crq_id = ?
+    `).all(id);
+    
+    res.json({ ...crq, keys });
+  });
+
+  app.post("/api/crqs/:id/close", (req, res) => {
+    const { id } = req.params;
+    try {
+      const transaction = db.transaction(() => {
+        // Update CRQ status
+        db.prepare("UPDATE crqs SET status = 'closed' WHERE id = ?").run(id);
+        
+        // Find all keys associated with this CRQ
+        const keys = db.prepare("SELECT key_id FROM crq_keys WHERE crq_id = ?").all(id) as { key_id: string }[];
+        
+        // Update each key to available
+        const updateKey = db.prepare("UPDATE keys SET status = 'available' WHERE id = ?");
+        for (const k of keys) {
+          updateKey.run(k.key_id);
+        }
+      });
+      transaction();
+      res.json({ success: true });
+    } catch (err: any) {
+      console.error("Close CRQ error:", err);
+      res.status(400).json({ error: err.message || "Failed to close CRQ" });
     }
   });
 
@@ -152,6 +246,7 @@ async function startServer() {
     const totalKeys = db.prepare("SELECT COUNT(*) as count FROM keys").get() as any;
     const inField = db.prepare("SELECT COUNT(*) as count FROM keys WHERE status = 'in_field'").get() as any;
     const available = db.prepare("SELECT COUNT(*) as count FROM keys WHERE status = 'available'").get() as any;
+    const totalCrqs = db.prepare("SELECT COUNT(*) as count FROM crqs").get() as any;
     const overdue = db.prepare(`
       SELECT COUNT(*) as count 
       FROM movements 
@@ -163,22 +258,9 @@ async function startServer() {
       total: totalKeys.count,
       inField: inField.count,
       available: available.count,
+      totalCrqs: totalCrqs.count,
       overdue: overdue.count
     });
-  });
-
-  // Reset Database
-  app.post("/api/reset", (req, res) => {
-    try {
-      const transaction = db.transaction(() => {
-        db.prepare("DELETE FROM movements").run();
-        db.prepare("DELETE FROM keys").run();
-      });
-      transaction();
-      res.json({ success: true });
-    } catch (err) {
-      res.status(500).json({ error: "Failed to reset database" });
-    }
   });
 
   // Vite middleware for development

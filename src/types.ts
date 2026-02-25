@@ -1,9 +1,18 @@
 export interface Key {
   id: string;
   name: string;
-  crq: string;
   status: 'available' | 'in_field';
   created_at: string;
+}
+
+export interface CRQ {
+  id: string;
+  technician: string;
+  technician_phone?: string;
+  company: string;
+  status: 'open' | 'closed';
+  created_at: string;
+  keys?: Key[];
 }
 
 export interface Movement {
@@ -22,5 +31,6 @@ export interface Stats {
   total: number;
   inField: number;
   available: number;
+  totalCrqs: number;
   overdue: number;
 }
