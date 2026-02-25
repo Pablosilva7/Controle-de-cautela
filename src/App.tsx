@@ -32,8 +32,8 @@ export default function App() {
   const [keySearchQuery, setKeySearchQuery] = useState('');
   
   // Form states
-  const [newKey, setNewKey] = useState({ id: '', name: '' });
-  const [editKeyForm, setEditKeyForm] = useState({ id: '', name: '' });
+  const [newKey, setNewKey] = useState({ id: '', name: '', description: '' });
+  const [editKeyForm, setEditKeyForm] = useState({ id: '', name: '', description: '' });
   const [checkoutForm, setCheckoutForm] = useState({ technician_name: '', company: '', crq: '', return_date: '' });
   const [newCrq, setNewCrq] = useState({ id: '', technician: '', technician_phone: '', company: '', selectedKeys: [] as string[] });
 
@@ -75,7 +75,7 @@ export default function App() {
     });
     if (res.ok) {
       setShowAddModal(false);
-      setNewKey({ id: '', name: '' });
+      setNewKey({ id: '', name: '', description: '' });
       fetchData();
     } else {
       alert('Erro ao cadastrar chave.');
@@ -404,17 +404,19 @@ export default function App() {
               animate={{ opacity: 1 }}
               className="glass-card overflow-hidden"
             >
-              <div className="grid grid-cols-4 bg-zinc-50 py-4 px-6 border-b border-zinc-200 text-xs font-bold text-zinc-500 uppercase tracking-wider">
+              <div className="grid grid-cols-5 bg-zinc-50 py-4 px-6 border-b border-zinc-200 text-xs font-bold text-zinc-500 uppercase tracking-wider">
                 <div>ID Chave</div>
                 <div>Nome</div>
+                <div>Descrição</div>
                 <div>Status</div>
                 <div className="text-right">Ações</div>
               </div>
               <div className="divide-y divide-zinc-100">
                 {filteredKeys.map((key) => (
-                  <div key={key.id} className="grid grid-cols-4 border-b border-zinc-100 py-4 px-6 items-center hover:bg-zinc-50 transition-colors">
+                  <div key={key.id} className="grid grid-cols-5 border-b border-zinc-100 py-4 px-6 items-center hover:bg-zinc-50 transition-colors">
                     <div className="font-mono text-sm text-zinc-600">{key.id}</div>
                     <div className="font-semibold">{key.name}</div>
+                    <div className="text-sm text-zinc-500 truncate pr-4">{key.description || '-'}</div>
                     <div>
                       <span className={`status-pill ${key.status === 'available' ? 'status-available' : 'status-in-field'}`}>
                         {key.status === 'available' ? 'Disponível' : 'Em Campo'}
@@ -424,7 +426,7 @@ export default function App() {
                       <button 
                         onClick={() => {
                           setShowEditModal(key);
-                          setEditKeyForm({ id: key.id, name: key.name });
+                          setEditKeyForm({ id: key.id, name: key.name, description: key.description || '' });
                         }}
                         className="text-sm font-bold text-zinc-500 hover:text-zinc-900 underline underline-offset-4"
                       >
@@ -584,6 +586,15 @@ export default function App() {
                   onChange={e => setNewKey({...newKey, name: e.target.value})}
                 />
               </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">Descrição / Observações</label>
+                <textarea 
+                  className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none resize-none"
+                  rows={3}
+                  value={newKey.description}
+                  onChange={e => setNewKey({...newKey, description: e.target.value})}
+                />
+              </div>
               <div className="flex gap-3 mt-8">
                 <button 
                   type="button"
@@ -631,6 +642,15 @@ export default function App() {
                   className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none"
                   value={editKeyForm.name}
                   onChange={e => setEditKeyForm({...editKeyForm, name: e.target.value})}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-zinc-700 mb-1">Descrição / Observações</label>
+                <textarea 
+                  className="w-full px-4 py-2 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900/10 outline-none resize-none"
+                  rows={3}
+                  value={editKeyForm.description}
+                  onChange={e => setEditKeyForm({...editKeyForm, description: e.target.value})}
                 />
               </div>
               <div className="flex gap-3 mt-8">

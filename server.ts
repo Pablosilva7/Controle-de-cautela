@@ -15,6 +15,7 @@ try {
     CREATE TABLE IF NOT EXISTS keys (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      description TEXT DEFAULT '',
       status TEXT DEFAULT 'available',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -87,6 +88,14 @@ try {
       console.log("Added status column to crqs");
     }
   }
+
+  // Keys table migrations
+  const keyColumns = db.prepare("PRAGMA table_info(keys)").all() as any[];
+  const keyColumnNames = keyColumns.map(c => c.name);
+  if (keyColumnNames.length > 0 && !keyColumnNames.includes('description')) {
+    db.exec("ALTER TABLE keys ADD COLUMN description TEXT DEFAULT ''");
+    console.log("Added description column to keys");
+  }
 } catch (err) {
   console.error("Migration error:", err);
 }
@@ -108,9 +117,9 @@ async function startServer() {
 
   // Add new key
   app.post("/api/keys", (req, res) => {
-    const { id, name } = req.body;
+    const { id, name, description } = req.body;
     try {
-      db.prepare("INSERT INTO keys (id, name) VALUES (?, ?)").run(id, name);
+      db.prepare("INSERT INTO keys (id, name, description) VALUES (?, ?, ?)").run(id, name, description || '');
       res.status(201).json({ success: true });
     } catch (err) {
       console.error("Add key error:", err);
@@ -121,7 +130,7 @@ async function startServer() {
   // Update existing key
   app.put("/api/keys/:id", (req, res) => {
     const { id: oldId } = req.params;
-    const { id: newId, name } = req.body;
+    const { id: newId, name, description } = req.body;
     
     try {
       const transaction = db.transaction(() => {
@@ -133,7 +142,7 @@ async function startServer() {
           db.prepare("UPDATE movements SET key_id = ? WHERE key_id = ?").run(newId, oldId);
           db.prepare("UPDATE crq_keys SET key_id = ? WHERE key_id = ?").run(newId, oldId);
         }
-        db.prepare("UPDATE keys SET id = ?, name = ? WHERE id = ?").run(newId, name, oldId);
+        db.prepare("UPDATE keys SET id = ?, name = ?, description = ? WHERE id = ?").run(newId, name, description || '', oldId);
       });
       transaction();
       res.json({ success: true });

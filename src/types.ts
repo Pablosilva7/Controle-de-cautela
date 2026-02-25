@@ -1,6 +1,7 @@
 export interface Key {
   id: string;
   name: string;
+  description?: string;
   status: 'available' | 'in_field';
   created_at: string;
 }
