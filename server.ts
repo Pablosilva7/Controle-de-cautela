@@ -2,48 +2,58 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import Database from "better-sqlite3";
 import path from "path";
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const db = new Database("keys.db");
 
 // Initialize Database
-db.exec(`
-  CREATE TABLE IF NOT EXISTS keys (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    crq TEXT,
-    status TEXT DEFAULT 'available',
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-  );
+try {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS keys (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      crq TEXT,
+      status TEXT DEFAULT 'available',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
 
-  CREATE TABLE IF NOT EXISTS movements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key_id TEXT NOT NULL,
-    technician_name TEXT NOT NULL,
-    company TEXT NOT NULL,
-    crq TEXT NOT NULL,
-    checkout_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-    checkin_time DATETIME,
-    expected_return DATETIME,
-    FOREIGN KEY (key_id) REFERENCES keys(id)
-  );
-`);
+    CREATE TABLE IF NOT EXISTS movements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key_id TEXT NOT NULL,
+      technician_name TEXT NOT NULL,
+      company TEXT NOT NULL,
+      crq TEXT NOT NULL,
+      checkout_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+      checkin_time DATETIME,
+      expected_return DATETIME,
+      FOREIGN KEY (key_id) REFERENCES keys(id)
+    );
+  `);
+} catch (err) {
+  console.error("Database initialization error:", err);
+}
 
 // Migration: Handle schema changes for existing databases
 try {
   const columns = db.prepare("PRAGMA table_info(movements)").all() as any[];
   const columnNames = columns.map(c => c.name);
   
-  if (columnNames.includes('user_name') && !columnNames.includes('technician_name')) {
-    db.exec("ALTER TABLE movements RENAME COLUMN user_name TO technician_name");
-    console.log("Migrated user_name to technician_name");
-  }
-  if (!columnNames.includes('company')) {
-    db.exec("ALTER TABLE movements ADD COLUMN company TEXT DEFAULT ''");
-    console.log("Added company column to movements");
-  }
-  if (!columnNames.includes('crq')) {
-    db.exec("ALTER TABLE movements ADD COLUMN crq TEXT DEFAULT ''");
-    console.log("Added crq column to movements");
+  if (columnNames.length > 0) {
+    if (columnNames.includes('user_name') && !columnNames.includes('technician_name')) {
+      db.exec("ALTER TABLE movements RENAME COLUMN user_name TO technician_name");
+      console.log("Migrated user_name to technician_name");
+    }
+    if (!columnNames.includes('company')) {
+      db.exec("ALTER TABLE movements ADD COLUMN company TEXT DEFAULT ''");
+      console.log("Added company column to movements");
+    }
+    if (!columnNames.includes('crq')) {
+      db.exec("ALTER TABLE movements ADD COLUMN crq TEXT DEFAULT ''");
+      console.log("Added crq column to movements");
+    }
   }
 } catch (err) {
   console.error("Migration error:", err);
@@ -56,6 +66,7 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
+  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
   
   // Get all keys
   app.get("/api/keys", (req, res) => {
