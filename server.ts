@@ -167,6 +167,20 @@ async function startServer() {
     });
   });
 
+  // Reset Database
+  app.post("/api/reset", (req, res) => {
+    try {
+      const transaction = db.transaction(() => {
+        db.prepare("DELETE FROM movements").run();
+        db.prepare("DELETE FROM keys").run();
+      });
+      transaction();
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to reset database" });
+    }
+  });
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({

@@ -116,6 +116,18 @@ export default function App() {
     if (res.ok) fetchData();
   };
 
+  const handleResetDatabase = async () => {
+    if (!confirm('Tem certeza que deseja limpar TODO o banco de dados? Esta ação não pode ser desfeita.')) return;
+    
+    const res = await fetch('/api/reset', { method: 'POST' });
+    if (res.ok) {
+      alert('Banco de dados limpo com sucesso!');
+      fetchData();
+    } else {
+      alert('Erro ao limpar banco de dados.');
+    }
+  };
+
   const filteredKeys = keys.filter(k => 
     k.name.toLowerCase().includes(searchQuery.toLowerCase()) || 
     k.id.toLowerCase().includes(searchQuery.toLowerCase())
@@ -304,6 +316,22 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              </div>
+
+              {/* Danger Zone */}
+              <div className="mt-12 pt-8 border-t border-zinc-200">
+                <div className="flex items-center justify-between p-6 bg-rose-50 rounded-2xl border border-rose-100">
+                  <div>
+                    <h4 className="text-rose-900 font-bold">Zona de Perigo</h4>
+                    <p className="text-rose-700 text-sm">Apague todos os registros de chaves e movimentações para reiniciar o sistema.</p>
+                  </div>
+                  <button 
+                    onClick={handleResetDatabase}
+                    className="px-6 py-2 bg-rose-600 text-white rounded-xl font-bold hover:bg-rose-700 transition-colors shadow-sm"
+                  >
+                    Limpar Banco de Dados
+                  </button>
                 </div>
               </div>
             </motion.div>
