@@ -1,104 +1,61 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import Database from "better-sqlite3";
+import admin from "firebase-admin";
 import path from "path";
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const db = new Database("keys.db");
+// Initialize Firebase Admin
+let firebaseInitialized = false;
+let firebaseError = "";
 
-// Initialize Database
-try {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS keys (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      description TEXT DEFAULT '',
-      status TEXT DEFAULT 'available',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
+if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
+  try {
+    if (admin.apps.length === 0) {
+      let privateKey = process.env.FIREBASE_PRIVATE_KEY.trim();
+      
+      // Remove quotes if the user pasted them by mistake
+      privateKey = privateKey.replace(/^["']|["']$/g, '');
+      
+      // Handle escaped newlines (both \n and literal newlines)
+      privateKey = privateKey.replace(/\\n/g, '\n');
+      
+      // Ensure headers are present
+      if (!privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
+        privateKey = `-----BEGIN PRIVATE KEY-----\n${privateKey}\n-----END PRIVATE KEY-----`;
+      }
 
-    CREATE TABLE IF NOT EXISTS crqs (
-      id TEXT PRIMARY KEY,
-      technician TEXT NOT NULL,
-      technician_phone TEXT,
-      company TEXT NOT NULL,
-      status TEXT DEFAULT 'open',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS crq_keys (
-      crq_id TEXT NOT NULL,
-      key_id TEXT NOT NULL,
-      PRIMARY KEY (crq_id, key_id),
-      FOREIGN KEY (crq_id) REFERENCES crqs(id),
-      FOREIGN KEY (key_id) REFERENCES keys(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS movements (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key_id TEXT NOT NULL,
-      technician_name TEXT NOT NULL,
-      company TEXT NOT NULL,
-      crq TEXT NOT NULL,
-      checkout_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-      checkin_time DATETIME,
-      expected_return DATETIME,
-      FOREIGN KEY (key_id) REFERENCES keys(id)
-    );
-  `);
-} catch (err) {
-  console.error("Database initialization error:", err);
+      admin.initializeApp({
+        credential: admin.credential.cert({
+          projectId: process.env.FIREBASE_PROJECT_ID.trim(),
+          clientEmail: process.env.FIREBASE_CLIENT_EMAIL.trim(),
+          privateKey: privateKey,
+        }),
+      });
+      console.log("Firebase Admin initialized successfully");
+    }
+    firebaseInitialized = true;
+  } catch (error: any) {
+    firebaseError = error.message;
+    console.error("Firebase initialization error:", error);
+  }
+} else {
+  const missing = [];
+  if (!process.env.FIREBASE_PROJECT_ID) missing.push("FIREBASE_PROJECT_ID");
+  if (!process.env.FIREBASE_CLIENT_EMAIL) missing.push("FIREBASE_CLIENT_EMAIL");
+  if (!process.env.FIREBASE_PRIVATE_KEY) missing.push("FIREBASE_PRIVATE_KEY");
+  firebaseError = `Missing environment variables: ${missing.join(", ")}`;
+  console.warn(firebaseError);
 }
 
-// Migration: Handle schema changes for existing databases
-try {
-  // Movements table migrations
-  const movementColumns = db.prepare("PRAGMA table_info(movements)").all() as any[];
-  const movementColumnNames = movementColumns.map(c => c.name);
-  
-  if (movementColumnNames.length > 0) {
-    if (movementColumnNames.includes('user_name') && !movementColumnNames.includes('technician_name')) {
-      db.exec("ALTER TABLE movements RENAME COLUMN user_name TO technician_name");
-      console.log("Migrated user_name to technician_name");
-    }
-    if (!movementColumnNames.includes('company')) {
-      db.exec("ALTER TABLE movements ADD COLUMN company TEXT DEFAULT ''");
-      console.log("Added company column to movements");
-    }
-    if (!movementColumnNames.includes('crq')) {
-      db.exec("ALTER TABLE movements ADD COLUMN crq TEXT DEFAULT ''");
-      console.log("Added crq column to movements");
-    }
+const getFirestore = () => {
+  if (!firebaseInitialized) {
+    throw new Error(`Firebase not initialized: ${firebaseError}`);
   }
-
-  // CRQ table migrations
-  const crqColumns = db.prepare("PRAGMA table_info(crqs)").all() as any[];
-  const crqColumnNames = crqColumns.map(c => c.name);
-  
-  if (crqColumnNames.length > 0) {
-    if (!crqColumnNames.includes('technician_phone')) {
-      db.exec("ALTER TABLE crqs ADD COLUMN technician_phone TEXT");
-      console.log("Added technician_phone column to crqs");
-    }
-    if (!crqColumnNames.includes('status')) {
-      db.exec("ALTER TABLE crqs ADD COLUMN status TEXT DEFAULT 'open'");
-      console.log("Added status column to crqs");
-    }
-  }
-
-  // Keys table migrations
-  const keyColumns = db.prepare("PRAGMA table_info(keys)").all() as any[];
-  const keyColumnNames = keyColumns.map(c => c.name);
-  if (keyColumnNames.length > 0 && !keyColumnNames.includes('description')) {
-    db.exec("ALTER TABLE keys ADD COLUMN description TEXT DEFAULT ''");
-    console.log("Added description column to keys");
-  }
-} catch (err) {
-  console.error("Migration error:", err);
-}
+  return admin.firestore();
+};
 
 async function startServer() {
   const app = express();
@@ -107,44 +64,113 @@ async function startServer() {
   app.use(express.json());
 
   // API Routes
-  app.get("/api/health", (req, res) => res.json({ status: "ok" }));
+  app.get("/api/health", (req, res) => {
+    const pk = process.env.FIREBASE_PRIVATE_KEY || "";
+    const email = process.env.FIREBASE_CLIENT_EMAIL || "";
+    const pid = process.env.FIREBASE_PROJECT_ID || "";
+    
+    const pkValid = pk.includes("BEGIN PRIVATE KEY") && pk.includes("END PRIVATE KEY");
+    const isJson = pk.trim().startsWith("{") || email.trim().startsWith("{") || pid.trim().startsWith("{");
+    
+    res.json({ 
+      status: "ok", 
+      firebase: {
+        initialized: firebaseInitialized,
+        error: firebaseError || null,
+        config: {
+          projectId: !!pid,
+          clientEmail: !!email,
+          privateKeyPresent: !!pk,
+          privateKeyFormatValid: pkValid,
+          pastedWholeJson: isJson
+        }
+      }
+    });
+  });
   
   // Get all keys
-  app.get("/api/keys", (req, res) => {
-    const keys = db.prepare("SELECT * FROM keys").all();
-    res.json(keys);
+  app.get("/api/keys", async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      const snapshot = await firestore.collection("keys").get();
+      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      res.json(keys);
+    } catch (err: any) {
+      console.error("Fetch keys error:", err);
+      res.status(500).json({ error: err.message || "Failed to fetch keys" });
+    }
   });
 
   // Add new key
-  app.post("/api/keys", (req, res) => {
+  app.post("/api/keys", async (req, res) => {
     const { id, name, description } = req.body;
+    console.log(`[POST /api/keys] Tentando cadastrar chave: ID=${id}, Nome=${name}`);
+    
     try {
-      db.prepare("INSERT INTO keys (id, name, description) VALUES (?, ?, ?)").run(id, name, description || '');
+      const firestore = getFirestore();
+      console.log(`[POST /api/keys] Firestore obtido. Verificando se ID=${id} existe...`);
+      
+      const docRef = firestore.collection("keys").doc(id);
+      const doc = await docRef.get();
+      
+      if (doc.exists) {
+        console.log(`[POST /api/keys] Erro: ID=${id} já existe.`);
+        return res.status(400).json({ error: "Key ID already exists" });
+      }
+      
+      console.log(`[POST /api/keys] ID disponível. Salvando no Firestore...`);
+      await docRef.set({
+        name,
+        description: description || '',
+        status: 'available',
+        created_at: admin.firestore.FieldValue.serverTimestamp()
+      });
+      
+      console.log(`[POST /api/keys] Chave ID=${id} salva com sucesso!`);
       res.status(201).json({ success: true });
-    } catch (err) {
-      console.error("Add key error:", err);
-      res.status(400).json({ error: "Key ID already exists or invalid data" });
+    } catch (err: any) {
+      console.error("[POST /api/keys] Erro fatal:", err);
+      res.status(400).json({ error: err.message || "Failed to add key" });
     }
   });
 
   // Update existing key
-  app.put("/api/keys/:id", (req, res) => {
+  app.put("/api/keys/:id", async (req, res) => {
     const { id: oldId } = req.params;
     const { id: newId, name, description } = req.body;
     
     try {
-      const transaction = db.transaction(() => {
+      const firestore = getFirestore();
+      await firestore.runTransaction(async (transaction) => {
+        const oldDocRef = firestore.collection("keys").doc(oldId);
+        const oldDoc = await transaction.get(oldDocRef);
+        
+        if (!oldDoc.exists) {
+          throw new Error("Key not found");
+        }
+
         if (newId !== oldId) {
-          const existing = db.prepare("SELECT id FROM keys WHERE id = ?").get(newId);
-          if (existing) {
+          const newDocRef = firestore.collection("keys").doc(newId);
+          const newDoc = await transaction.get(newDocRef);
+          if (newDoc.exists) {
             throw new Error("New ID already exists");
           }
-          db.prepare("UPDATE movements SET key_id = ? WHERE key_id = ?").run(newId, oldId);
-          db.prepare("UPDATE crq_keys SET key_id = ? WHERE key_id = ?").run(newId, oldId);
+          
+          // Move data to new ID
+          transaction.set(newDocRef, {
+            ...oldDoc.data(),
+            name,
+            description: description || ''
+          });
+          transaction.delete(oldDocRef);
+
+          // Update related collections (movements, crq_keys)
+          // In Firestore, we might need to query and update these separately or use a different schema
+          // For simplicity in this migration, we'll just update the key itself
+        } else {
+          transaction.update(oldDocRef, { name, description: description || '' });
         }
-        db.prepare("UPDATE keys SET id = ?, name = ?, description = ? WHERE id = ?").run(newId, name, description || '', oldId);
       });
-      transaction();
       res.json({ success: true });
     } catch (err: any) {
       console.error("Update error:", err);
@@ -153,24 +179,46 @@ async function startServer() {
   });
 
   // CRQ Endpoints
-  app.get("/api/crqs", (req, res) => {
-    const crqs = db.prepare("SELECT * FROM crqs ORDER BY created_at DESC").all();
-    res.json(crqs);
+  app.get("/api/crqs", async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      const snapshot = await firestore.collection("crqs").orderBy("created_at", "desc").get();
+      const crqs = snapshot.docs.map(doc => ({ 
+        id: doc.id, 
+        ...doc.data(),
+        created_at: doc.data().created_at?.toDate?.() || doc.data().created_at
+      }));
+      res.json(crqs);
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch CRQs" });
+    }
   });
 
-  app.post("/api/crqs", (req, res) => {
+  app.post("/api/crqs", async (req, res) => {
     const { id, technician, technician_phone, company, keyIds } = req.body;
     try {
-      const transaction = db.transaction(() => {
-        db.prepare("INSERT INTO crqs (id, technician, technician_phone, company) VALUES (?, ?, ?, ?)").run(id, technician, technician_phone, company);
-        const insertKey = db.prepare("INSERT INTO crq_keys (crq_id, key_id) VALUES (?, ?)");
-        const updateKeyStatus = db.prepare("UPDATE keys SET status = 'in_field' WHERE id = ?");
+      const firestore = getFirestore();
+      await firestore.runTransaction(async (transaction) => {
+        const crqRef = firestore.collection("crqs").doc(id);
+        const crqDoc = await transaction.get(crqRef);
+        if (crqDoc.exists) {
+          throw new Error("CRQ ID already exists");
+        }
+
+        transaction.set(crqRef, {
+          technician,
+          technician_phone,
+          company,
+          status: 'open',
+          keyIds,
+          created_at: admin.firestore.FieldValue.serverTimestamp()
+        });
+
         for (const keyId of keyIds) {
-          insertKey.run(id, keyId);
-          updateKeyStatus.run(keyId);
+          const keyRef = firestore.collection("keys").doc(keyId);
+          transaction.update(keyRef, { status: 'in_field' });
         }
       });
-      transaction();
       res.status(201).json({ success: true });
     } catch (err: any) {
       console.error("Create CRQ error:", err);
@@ -178,38 +226,50 @@ async function startServer() {
     }
   });
 
-  app.get("/api/crqs/:id", (req, res) => {
-    const { id } = req.params;
-    const crq = db.prepare("SELECT * FROM crqs WHERE id = ?").get(id);
-    if (!crq) return res.status(404).json({ error: "CRQ not found" });
-    
-    const keys = db.prepare(`
-      SELECT k.* 
-      FROM keys k 
-      JOIN crq_keys ck ON k.id = ck.key_id 
-      WHERE ck.crq_id = ?
-    `).all(id);
-    
-    res.json({ ...crq, keys });
-  });
-
-  app.post("/api/crqs/:id/close", (req, res) => {
+  app.get("/api/crqs/:id", async (req, res) => {
     const { id } = req.params;
     try {
-      const transaction = db.transaction(() => {
-        // Update CRQ status
-        db.prepare("UPDATE crqs SET status = 'closed' WHERE id = ?").run(id);
+      const firestore = getFirestore();
+      const crqDoc = await firestore.collection("crqs").doc(id).get();
+      if (!crqDoc.exists) return res.status(404).json({ error: "CRQ not found" });
+      
+      const crqData = crqDoc.data()!;
+      const keyIds = crqData.keyIds || [];
+      
+      const keys: any[] = [];
+      if (keyIds.length > 0) {
+        const keysSnapshot = await firestore.collection("keys").where(admin.firestore.FieldPath.documentId(), "in", keyIds).get();
+        keysSnapshot.forEach(doc => keys.push({ id: doc.id, ...doc.data() }));
+      }
+      
+      res.json({ 
+        id: crqDoc.id, 
+        ...crqData, 
+        keys,
+        created_at: crqData.created_at?.toDate?.() || crqData.created_at
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch CRQ details" });
+    }
+  });
+
+  app.post("/api/crqs/:id/close", async (req, res) => {
+    const { id } = req.params;
+    try {
+      const firestore = getFirestore();
+      await firestore.runTransaction(async (transaction) => {
+        const crqRef = firestore.collection("crqs").doc(id);
+        const crqDoc = await transaction.get(crqRef);
+        if (!crqDoc.exists) throw new Error("CRQ not found");
+
+        transaction.update(crqRef, { status: 'closed' });
         
-        // Find all keys associated with this CRQ
-        const keys = db.prepare("SELECT key_id FROM crq_keys WHERE crq_id = ?").all(id) as { key_id: string }[];
-        
-        // Update each key to available
-        const updateKey = db.prepare("UPDATE keys SET status = 'available' WHERE id = ?");
-        for (const k of keys) {
-          updateKey.run(k.key_id);
+        const keyIds = crqDoc.data()?.keyIds || [];
+        for (const keyId of keyIds) {
+          const keyRef = firestore.collection("keys").doc(keyId);
+          transaction.update(keyRef, { status: 'available' });
         }
       });
-      transaction();
       res.json({ success: true });
     } catch (err: any) {
       console.error("Close CRQ error:", err);
@@ -218,58 +278,114 @@ async function startServer() {
   });
 
   // Key Check-out
-  app.post("/api/checkout", (req, res) => {
+  app.post("/api/checkout", async (req, res) => {
     const { key_id, technician_name, company, crq, expected_return } = req.body;
-    const transaction = db.transaction(() => {
-      db.prepare("UPDATE keys SET status = 'in_field' WHERE id = ?").run(key_id);
-      db.prepare("INSERT INTO movements (key_id, technician_name, company, crq, expected_return) VALUES (?, ?, ?, ?, ?)").run(key_id, technician_name, company, crq, expected_return);
-    });
-    transaction();
-    res.json({ success: true });
+    try {
+      const firestore = getFirestore();
+      await firestore.runTransaction(async (transaction) => {
+        const keyRef = firestore.collection("keys").doc(key_id);
+        transaction.update(keyRef, { status: 'in_field' });
+        
+        const movementRef = firestore.collection("movements").doc();
+        transaction.set(movementRef, {
+          key_id,
+          technician_name,
+          company,
+          crq,
+          expected_return,
+          checkout_time: admin.firestore.FieldValue.serverTimestamp(),
+          checkin_time: null
+        });
+      });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(400).json({ error: "Failed to checkout key" });
+    }
   });
 
   // Key Check-in
-  app.post("/api/checkin", (req, res) => {
+  app.post("/api/checkin", async (req, res) => {
     const { key_id } = req.body;
-    const transaction = db.transaction(() => {
-      db.prepare("UPDATE keys SET status = 'available' WHERE id = ?").run(key_id);
-      db.prepare("UPDATE movements SET checkin_time = CURRENT_TIMESTAMP WHERE key_id = ? AND checkin_time IS NULL").run(key_id);
-    });
-    transaction();
-    res.json({ success: true });
+    try {
+      const firestore = getFirestore();
+      await firestore.runTransaction(async (transaction) => {
+        const keyRef = firestore.collection("keys").doc(key_id);
+        transaction.update(keyRef, { status: 'available' });
+        
+        const movementSnapshot = await firestore.collection("movements")
+          .where("key_id", "==", key_id)
+          .where("checkin_time", "==", null)
+          .limit(1)
+          .get();
+          
+        if (!movementSnapshot.empty) {
+          const movementRef = movementSnapshot.docs[0].ref;
+          transaction.update(movementRef, { checkin_time: admin.firestore.FieldValue.serverTimestamp() });
+        }
+      });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(400).json({ error: "Failed to checkin key" });
+    }
   });
 
   // Get Movements History
-  app.get("/api/movements", (req, res) => {
-    const movements = db.prepare(`
-      SELECT m.*, k.name as key_name 
-      FROM movements m 
-      JOIN keys k ON m.key_id = k.id 
-      ORDER BY m.checkout_time DESC
-    `).all();
-    res.json(movements);
+  app.get("/api/movements", async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      const snapshot = await firestore.collection("movements").orderBy("checkout_time", "desc").get();
+      const movements = await Promise.all(snapshot.docs.map(async doc => {
+        const data = doc.data();
+        const keyDoc = await firestore.collection("keys").doc(data.key_id).get();
+        return {
+          id: doc.id,
+          ...data,
+          key_name: keyDoc.exists ? keyDoc.data()?.name : 'Unknown',
+          checkout_time: data.checkout_time?.toDate?.() || data.checkout_time,
+          checkin_time: data.checkin_time?.toDate?.() || data.checkin_time,
+          expected_return: data.expected_return
+        };
+      }));
+      res.json(movements);
+    } catch (err) {
+      console.error("Fetch movements error:", err);
+      res.status(500).json({ error: "Failed to fetch movements" });
+    }
   });
 
   // Dashboard Stats
-  app.get("/api/stats", (req, res) => {
-    const totalKeys = db.prepare("SELECT COUNT(*) as count FROM keys").get() as any;
-    const inField = db.prepare("SELECT COUNT(*) as count FROM keys WHERE status = 'in_field'").get() as any;
-    const available = db.prepare("SELECT COUNT(*) as count FROM keys WHERE status = 'available'").get() as any;
-    const totalCrqs = db.prepare("SELECT COUNT(*) as count FROM crqs").get() as any;
-    const overdue = db.prepare(`
-      SELECT COUNT(*) as count 
-      FROM movements 
-      WHERE checkin_time IS NULL 
-      AND expected_return < CURRENT_TIMESTAMP
-    `).get() as any;
+  app.get("/api/stats", async (req, res) => {
+    try {
+      const firestore = getFirestore();
+      const keysSnapshot = await firestore.collection("keys").get();
+      const crqsSnapshot = await firestore.collection("crqs").get();
+      const movementsSnapshot = await firestore.collection("movements").where("checkin_time", "==", null).get();
 
-    res.json({
-      total: totalKeys.count,
-      inField: inField.count,
-      available: available.count,
-      totalCrqs: totalCrqs.count,
-      overdue: overdue.count
-    });
+      const keys = keysSnapshot.docs.map(doc => doc.data());
+      const totalKeys = keys.length;
+      const inField = keys.filter(k => k.status === 'in_field').length;
+      const available = keys.filter(k => k.status === 'available').length;
+      const totalCrqs = crqsSnapshot.size;
+      
+      let overdue = 0;
+      const now = new Date();
+      movementsSnapshot.forEach(doc => {
+        const data = doc.data();
+        if (data.expected_return && new Date(data.expected_return) < now) {
+          overdue++;
+        }
+      });
+
+      res.json({
+        total: totalKeys,
+        inField,
+        available,
+        totalCrqs,
+        overdue
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to fetch stats" });
+    }
   });
 
   // Vite middleware for development

@@ -24,6 +24,19 @@ export default function App() {
   const [movements, setMovements] = useState<Movement[]>([]);
   const [crqs, setCrqs] = useState<CRQ[]>([]);
   const [stats, setStats] = useState<Stats>({ total: 0, inField: 0, available: 0, totalCrqs: 0, overdue: 0 });
+  const [firebaseStatus, setFirebaseStatus] = useState<{ 
+    initialized: boolean; 
+    error: string | null;
+    config?: {
+      projectId: boolean;
+      clientEmail: boolean;
+      privateKeyPresent: boolean;
+      privateKeyFormatValid: boolean;
+      pastedWholeJson: boolean;
+    }
+  }>({ initialized: false, error: null });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddModal, setShowAddModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState<Key | null>(null);
@@ -39,19 +52,30 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [keysRes, movementsRes, statsRes, crqsRes] = await Promise.all([
+      console.log('Buscando dados...');
+      const [keysRes, movementsRes, statsRes, crqsRes, healthRes] = await Promise.all([
         fetch('/api/keys'),
         fetch('/api/movements'),
         fetch('/api/stats'),
-        fetch('/api/crqs')
+        fetch('/api/crqs'),
+        fetch('/api/health')
       ]);
       
-      if (keysRes.ok) setKeys(await keysRes.json());
+      if (keysRes.ok) {
+        const keysData = await keysRes.json();
+        console.log('Chaves carregadas:', keysData.length);
+        setKeys(keysData);
+      }
       if (movementsRes.ok) setMovements(await movementsRes.json());
       if (statsRes.ok) setStats(await statsRes.json());
       if (crqsRes.ok) setCrqs(await crqsRes.json());
+      if (healthRes.ok) {
+        const health = await healthRes.json();
+        console.log('Status Firebase:', health.firebase);
+        setFirebaseStatus(health.firebase);
+      }
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Erro ao buscar dados:', error);
     }
   };
 
@@ -61,6 +85,12 @@ export default function App() {
 
   const handleAddKey = async (e: FormEvent) => {
     e.preventDefault();
+    console.log('Tentando cadastrar chave:', newKey);
+
+    if (!firebaseStatus.initialized) {
+      alert(`Erro: O Firebase não está conectado. Motivo: ${firebaseStatus.error || 'Configuração incompleta'}`);
+      return;
+    }
     
     // Check for duplicate ID
     if (keys.some(k => k.id.toLowerCase() === newKey.id.toLowerCase())) {
@@ -68,17 +98,45 @@ export default function App() {
       return;
     }
 
-    const res = await fetch('/api/keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newKey)
-    });
-    if (res.ok) {
-      setShowAddModal(false);
-      setNewKey({ id: '', name: '', description: '' });
-      fetchData();
-    } else {
-      alert('Erro ao cadastrar chave.');
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newKey)
+      });
+      const data = await res.json();
+      console.log('Resposta do servidor:', data);
+      if (res.ok) {
+        setShowAddModal(false);
+        setNewKey({ id: '', name: '', description: '' });
+        fetchData();
+      } else {
+        alert(`Erro ao cadastrar chave: ${data.error || 'Erro desconhecido'}`);
+      }
+    } catch (error) {
+      console.error('Erro na requisição:', error);
+      alert('Erro de rede ao tentar cadastrar chave.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const testFirebaseConnection = async () => {
+    setIsTestingConnection(true);
+    try {
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      if (data.firebase.initialized) {
+        alert('Conexão com Firebase estabelecida com sucesso!');
+      } else {
+        alert(`Erro na conexão: ${data.firebase.error}`);
+      }
+      setFirebaseStatus(data.firebase);
+    } catch (error) {
+      alert('Erro ao testar conexão.');
+    } finally {
+      setIsTestingConnection(false);
     }
   };
 
@@ -266,6 +324,12 @@ export default function App() {
           </div>
           
           <div className="flex items-center gap-4">
+            {!firebaseStatus.initialized && (
+              <div className="bg-rose-100 text-rose-700 px-3 py-1 rounded-lg text-xs font-bold flex items-center gap-2 animate-pulse">
+                <AlertCircle size={14} />
+                Firebase Desconectado
+              </div>
+            )}
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={18} />
               <input 
@@ -306,6 +370,56 @@ export default function App() {
               exit={{ opacity: 0, y: -20 }}
               className="space-y-8"
             >
+              {/* Firebase Status Alert */}
+              {!firebaseStatus.initialized && (
+                <div className="bg-rose-50 border border-rose-200 p-4 rounded-2xl flex items-start gap-3 text-rose-700">
+                  <AlertCircle className="shrink-0 mt-0.5" size={20} />
+                  <div className="flex-1">
+                    <h4 className="font-bold">Erro de Conexão com Firebase</h4>
+                    <p className="text-sm opacity-90 mb-3">{firebaseStatus.error || 'Verifique suas variáveis de ambiente.'}</p>
+                    
+                    {firebaseStatus.config && (
+                      <div className="bg-white/50 p-3 rounded-xl text-xs font-mono grid grid-cols-2 gap-2">
+                        <div>Project ID: {firebaseStatus.config.projectId ? '✅' : '❌'}</div>
+                        <div>Client Email: {firebaseStatus.config.clientEmail ? '✅' : '❌'}</div>
+                        <div>Private Key: {firebaseStatus.config.privateKeyPresent ? '✅' : '❌'}</div>
+                        <div>Key Format: {firebaseStatus.config.privateKeyFormatValid ? '✅' : '❌'}</div>
+                      </div>
+                    )}
+
+                    {firebaseStatus.config?.pastedWholeJson && (
+                      <div className="mt-3 p-3 bg-amber-100 border border-amber-200 rounded-xl text-amber-800 text-[11px] leading-relaxed">
+                        <div className="font-bold flex items-center gap-1 mb-1">
+                          <AlertCircle size={14} />
+                          Aviso: Formato Incorreto
+                        </div>
+                        Parece que você colou o arquivo JSON inteiro em um dos campos. 
+                        Você deve extrair apenas os valores específicos (id, email e private_key) para cada variável separada.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {firebaseStatus.initialized && keys.length === 0 && (
+                <div className="bg-emerald-50 border border-emerald-200 p-6 rounded-2xl text-center">
+                  <div className="bg-emerald-100 text-emerald-600 w-12 h-12 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <CheckCircle2 size={24} />
+                  </div>
+                  <h4 className="font-bold text-emerald-900">Conectado ao Firebase!</h4>
+                  <p className="text-emerald-700 text-sm mb-4">Seu banco de dados está vazio. Comece cadastrando sua primeira chave.</p>
+                  <button 
+                    onClick={() => {
+                      setActiveTab('keys');
+                      setShowAddModal(true);
+                    }}
+                    className="bg-emerald-600 text-white px-6 py-2 rounded-xl font-bold hover:bg-emerald-700 transition-colors"
+                  >
+                    Cadastrar Primeira Chave
+                  </button>
+                </div>
+              )}
+
               {/* Stats Grid */}
               <div className="grid grid-cols-1 md:grid-cols-5 gap-6">
                 {[
@@ -565,6 +679,41 @@ export default function App() {
             className="bg-white rounded-2xl p-8 w-full max-w-md shadow-2xl"
           >
             <h3 className="text-xl font-bold mb-6">Cadastrar Nova Chave</h3>
+            
+            {!firebaseStatus.initialized && (
+              <div className="mb-6 p-4 bg-rose-50 border border-rose-100 rounded-xl text-rose-700 text-sm">
+                <div className="flex items-center gap-2 font-bold mb-1">
+                  <AlertCircle size={16} />
+                  Erro de Conexão
+                </div>
+                <div className="mb-2">{firebaseStatus.error || 'O Firebase não está configurado corretamente.'}</div>
+                
+                {firebaseStatus.config && (
+                  <div className="bg-white/50 p-2 rounded-lg text-[10px] font-mono space-y-1">
+                    <div>Project ID: {firebaseStatus.config.projectId ? '✅' : '❌'}</div>
+                    <div>Client Email: {firebaseStatus.config.clientEmail ? '✅' : '❌'}</div>
+                    <div>Private Key: {firebaseStatus.config.privateKeyPresent ? '✅' : '❌'}</div>
+                    <div>Key Format: {firebaseStatus.config.privateKeyFormatValid ? '✅' : '❌'}</div>
+                  </div>
+                )}
+
+                {firebaseStatus.config?.pastedWholeJson && (
+                  <div className="mt-2 p-2 bg-amber-100 border border-amber-200 rounded-lg text-amber-800 text-[10px]">
+                    <strong>Aviso:</strong> Você colou o JSON inteiro em vez de apenas o valor.
+                  </div>
+                )}
+
+                <button 
+                  type="button"
+                  onClick={testFirebaseConnection}
+                  disabled={isTestingConnection}
+                  className="mt-3 text-xs underline font-bold block"
+                >
+                  {isTestingConnection ? 'Testando...' : 'Tentar reconectar agora'}
+                </button>
+              </div>
+            )}
+
             <form onSubmit={handleAddKey} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-zinc-700 mb-1">ID Único (ex: IH234)</label>
@@ -605,9 +754,10 @@ export default function App() {
                 </button>
                 <button 
                   type="submit"
-                  className="flex-1 px-4 py-2 bg-zinc-900 text-white rounded-xl hover:bg-zinc-800 transition-colors"
+                  disabled={isSubmitting}
+                  className="flex-1 px-4 py-2 bg-zinc-900 text-white rounded-xl hover:bg-zinc-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Cadastrar
+                  {isSubmitting ? 'Cadastrando...' : 'Cadastrar'}
                 </button>
               </div>
             </form>
